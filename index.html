@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#000000">
+<title>앞뒤 동시 카메라</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+
+  :root {
+    --bar: rgba(20, 20, 22, 0.92);
+    --line: rgba(255, 255, 255, 0.14);
+    --txt: #f2f2f4;
+    --dim: #9a9aa2;
+    --accent: #4c8dff;
+    --ok: #34c759;
+    --warn: #ffb02e;
+    --bad: #ff453a;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #000;
+    color: var(--txt);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+                 "Noto Sans KR", "Malgun Gothic", sans-serif;
+    overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  #app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+
+  /* ---------- 카메라 화면 ---------- */
+  #stage { flex: 1; display: flex; min-height: 0; gap: 2px; background: #000; }
+
+  /* 세로 화면이면 위/아래, 가로 화면이면 좌/우 */
+  @media (orientation: portrait) { #stage[data-layout="auto"] { flex-direction: column; } }
+  @media (orientation: landscape) { #stage[data-layout="auto"] { flex-direction: row; } }
+  #stage[data-layout="rows"] { flex-direction: column; }
+  #stage[data-layout="cols"] { flex-direction: row; }
+  #stage[data-swapped="true"] { flex-direction: column-reverse; }
+  #stage[data-layout="cols"][data-swapped="true"] { flex-direction: row-reverse; }
+  @media (orientation: landscape) {
+    #stage[data-layout="auto"][data-swapped="true"] { flex-direction: row-reverse; }
+  }
+
+  .panel {
+    position: relative;
+    flex: 1 1 50%;
+    min-width: 0;
+    min-height: 0;
+    background: #0a0a0c;
+    overflow: hidden;
+  }
+
+  .panel video, .panel canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  /* 전면 카메라는 거울처럼 좌우 반전 (셀피 기본값) */
+  .panel[data-mirror="true"] video,
+  .panel[data-mirror="true"] canvas { transform: scaleX(-1); }
+
+  /* 번갈아 모드에서 대기 중인 쪽에 보여줄 마지막 프레임 */
+  .panel canvas { z-index: 1; opacity: 0; transition: opacity .15s; }
+  .panel[data-frozen="true"] canvas { opacity: 1; }
+  .panel[data-frozen="true"]::after {
+    content: "대기 중";
+    position: absolute; z-index: 3;
+    left: 50%; top: 50%; transform: translate(-50%, -50%);
+    background: rgba(0,0,0,.55); color: #fff;
+    font-size: 12px; padding: 5px 11px; border-radius: 999px;
+    backdrop-filter: blur(4px);
+  }
+
+  .badge {
+    position: absolute; z-index: 4;
+    top: 10px; left: 10px;
+    display: flex; align-items: center; gap: 6px;
+    background: rgba(0, 0, 0, .55);
+    backdrop-filter: blur(8px);
+    padding: 5px 11px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .01em;
+    pointer-events: none;
+  }
+  .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+  .panel[data-live="true"] .badge .dot { background: var(--ok); box-shadow: 0 0 7px var(--ok); }
+  .badge .res { color: var(--dim); font-weight: 400; font-variant-numeric: tabular-nums; }
+
+  .panel .picker {
+    position: absolute; z-index: 4;
+    bottom: 10px; left: 10px; right: 10px;
+    max-width: 260px;
+  }
+  .panel .picker select {
+    width: 100%;
+    background: rgba(0, 0, 0, .6);
+    backdrop-filter: blur(8px);
+    color: var(--txt);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 7px 9px;
+    font-size: 12px;
+    font-family: inherit;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  #app[data-pickers="off"] .panel .picker { display: none; }
+
+  /* ---------- 시작 / 오류 화면 ---------- */
+  #cover {
+    position: absolute; inset: 0; z-index: 20;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 18px; padding: 28px;
+    text-align: center;
+    background: radial-gradient(circle at 50% 38%, #1c1c22 0%, #000 78%);
+  }
+  #cover[hidden] { display: none; }
+  #cover h1 { margin: 0; font-size: 25px; font-weight: 700; letter-spacing: -.02em; }
+  #cover p  { margin: 0; max-width: 30em; color: var(--dim); font-size: 14px; line-height: 1.65; }
+
+  .big {
+    border: 0;
+    background: var(--accent);
+    color: #fff;
+    font: 600 17px/1 inherit;
+    padding: 17px 40px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: transform .12s, opacity .12s;
+  }
+  .big:active { transform: scale(.96); }
+  .big:disabled { opacity: .5; cursor: default; }
+
+  #coverNote {
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 13px 15px;
+    border-radius: 11px;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,.04);
+    max-width: 30em;
+    text-align: left;
+    white-space: pre-line;
+  }
+  #coverNote[hidden] { display: none; }
+  #coverNote.bad  { border-color: rgba(255,69,58,.5);  background: rgba(255,69,58,.1); }
+  #coverNote.warn { border-color: rgba(255,176,46,.5); background: rgba(255,176,46,.1); }
+
+  /* ---------- 토스트 (실행 중 안내) ---------- */
+  #toast {
+    position: absolute; z-index: 25;
+    left: 12px; right: 12px;
+    top: calc(12px + env(safe-area-inset-top));
+    margin: 0 auto;
+    max-width: 34em;
+    padding: 13px 15px;
+    border-radius: 12px;
+    background: rgba(12, 12, 14, .93);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--line);
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-line;
+    opacity: 0;
+    transform: translateY(-10px);
+    transition: opacity .22s, transform .22s;
+    pointer-events: none;
+  }
+  #toast.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+  #toast.warn { border-color: rgba(255,176,46,.55); }
+  #toast.bad  { border-color: rgba(255,69,58,.55); }
+  #toast .close {
+    position: absolute; top: 6px; right: 8px;
+    background: none; border: 0; color: var(--dim);
+    font-size: 19px; line-height: 1; padding: 4px 7px; cursor: pointer;
+  }
+
+  /* ---------- 하단 컨트롤 ---------- */
+  #bar {
+    flex: 0 0 auto;
+    display: flex; align-items: center; gap: 7px;
+    padding: 9px 11px calc(9px + env(safe-area-inset-bottom));
+    background: var(--bar);
+    border-top: 1px solid var(--line);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  #bar::-webkit-scrollbar { display: none; }
+
+  #bar button {
+    flex: 0 0 auto;
+    background: rgba(255, 255, 255, .09);
+    color: var(--txt);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 9px 13px;
+    font: 500 13px/1 inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #bar button:active { background: rgba(255, 255, 255, .2); }
+  #bar button[aria-pressed="true"] { background: var(--accent); border-color: transparent; }
+  #bar button.danger { background: rgba(255,69,58,.16); border-color: rgba(255,69,58,.4); }
+  #bar .sep { flex: 1 1 auto; min-width: 4px; }
+
+  #mode {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  #mode.dual { background: rgba(52,199,89,.18);  color: #7ee79b; }
+  #mode.alt  { background: rgba(255,176,46,.18); color: #ffcd73; }
+  #mode.off  { background: rgba(255,255,255,.09); color: var(--dim); }
+
+  /* ---------- 진단 패널 ---------- */
+  #diag {
+    position: absolute; z-index: 30;
+    left: 10px; right: 10px; bottom: 68px;
+    max-height: 55vh; overflow-y: auto;
+    background: rgba(12, 12, 14, .96);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--line);
+    border-radius: 13px;
+    padding: 15px 16px;
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+  #diag[hidden] { display: none; }
+  #diag h2 { margin: 0 0 9px; font-size: 13px; letter-spacing: .02em; color: var(--dim); text-transform: uppercase; }
+  #diag dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 13px; margin: 0 0 13px; }
+  #diag dt { color: var(--dim); white-space: nowrap; }
+  #diag dd { margin: 0; word-break: break-all; }
+  #diag ol { margin: 0; padding-left: 1.35em; }
+  #diag li { margin-bottom: 5px; }
+  #diag code { font-size: 11px; color: var(--dim); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #diag .tag { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; margin-left: 5px; vertical-align: 1px; }
+  #diag .tag.f { background: rgba(76,141,255,.2);  color: #9dc0ff; }
+  #diag .tag.b { background: rgba(255,176,46,.2);  color: #ffcd73; }
+</style>
+</head>
+<body>
+<div id="app" data-pickers="off">
+
+  <div id="stage" data-layout="auto" data-swapped="false">
+    <div class="panel" id="panelFront" data-mirror="true" data-live="false">
+      <video id="videoFront" autoplay playsinline muted></video>
+      <canvas id="freezeFront"></canvas>
+      <div class="badge"><span class="dot"></span><span>전면</span><span class="res" id="resFront"></span></div>
+      <div class="picker"><select id="selFront" aria-label="전면 카메라 선택"></select></div>
+    </div>
+    <div class="panel" id="panelBack" data-mirror="false" data-live="false">
+      <video id="videoBack" autoplay playsinline muted></video>
+      <canvas id="freezeBack"></canvas>
+      <div class="badge"><span class="dot"></span><span>후면</span><span class="res" id="resBack"></span></div>
+      <div class="picker"><select id="selBack" aria-label="후면 카메라 선택"></select></div>
+    </div>
+  </div>
+
+  <div id="toast"><button class="close" id="toastClose" aria-label="닫기">&times;</button><span id="toastText"></span></div>
+
+  <div id="bar">
+    <button id="btnStop" class="danger" hidden>정지</button>
+    <button id="btnMirror" aria-pressed="true">전면 반전</button>
+    <button id="btnLayout">분할: 자동</button>
+    <button id="btnSwap">순서 바꾸기</button>
+    <button id="btnPickers" aria-pressed="false">카메라 선택</button>
+    <button id="btnFull">전체화면</button>
+    <span class="sep"></span>
+    <span id="mode" class="off">대기</span>
+    <button id="btnDiag" aria-pressed="false">진단</button>
+  </div>
+
+  <div id="diag" hidden>
+    <h2>진단 정보</h2>
+    <dl id="diagEnv"></dl>
+    <h2>감지된 카메라</h2>
+    <ol id="diagList"><li>아직 확인되지 않음. 먼저 시작하세요.</li></ol>
+  </div>
+
+  <div id="cover">
+    <h1>앞뒤 동시 카메라</h1>
+    <p>버튼을 누르면 전면·후면 카메라를 동시에 켜서 두 화면을 한 번에 보여줍니다.
+       카메라 권한을 허용해 주세요.</p>
+    <button id="btnStart" class="big">카메라 켜기</button>
+    <div id="coverNote" hidden></div>
+  </div>
+
+</div>
+
+<script>
+"use strict";
+
+/* =========================================================================
+   앞뒤 동시 카메라 — 보기 전용
+   -------------------------------------------------------------------------
+   동작 방식
+   1. 전면 카메라를 먼저 열어 권한 팝업을 띄운다. (권한 전에는 기기 label이 빈 값)
+   2. 권한을 받은 뒤 enumerateDevices()로 카메라 목록을 읽는다.
+   3. 후면 카메라를 두 번째로 연다.
+   4. 두 화면이 실제로 "프레임을 갱신하는지" 검사한다.
+        - 둘 다 살아있으면          → dual (동시) 모드
+        - 두 번째가 실패/첫 번째가 죽으면 → alternate (번갈아) 모드로 폴백
+      iOS Safari는 두 번째 카메라를 열면 첫 번째를 조용히 죽이기 때문에,
+      예외(throw)만 봐서는 알 수 없다. 그래서 currentTime이 실제로 흐르는지 본다.
+   ========================================================================= */
+
+const SIDES = ["front", "back"];
+
+const el = {
+  app:      document.getElementById("app"),
+  stage:    document.getElementById("stage"),
+  cover:    document.getElementById("cover"),
+  note:     document.getElementById("coverNote"),
+  start:    document.getElementById("btnStart"),
+  stop:     document.getElementById("btnStop"),
+  mirror:   document.getElementById("btnMirror"),
+  layout:   document.getElementById("btnLayout"),
+  swap:     document.getElementById("btnSwap"),
+  pickers:  document.getElementById("btnPickers"),
+  full:     document.getElementById("btnFull"),
+  diagBtn:  document.getElementById("btnDiag"),
+  diag:     document.getElementById("diag"),
+  diagEnv:  document.getElementById("diagEnv"),
+  diagList: document.getElementById("diagList"),
+  mode:     document.getElementById("mode"),
+  toast:      document.getElementById("toast"),
+  toastText:  document.getElementById("toastText"),
+  toastClose: document.getElementById("toastClose"),
+};
+
+const panes = {
+  front: {
+    panel:  document.getElementById("panelFront"),
+    video:  document.getElementById("videoFront"),
+    freeze: document.getElementById("freezeFront"),
+    res:    document.getElementById("resFront"),
+    sel:    document.getElementById("selFront"),
+    facing: "user",
+    stream: null,
+    deviceId: null,
+  },
+  back: {
+    panel:  document.getElementById("panelBack"),
+    video:  document.getElementById("videoBack"),
+    freeze: document.getElementById("freezeBack"),
+    res:    document.getElementById("resBack"),
+    sel:    document.getElementById("selBack"),
+    facing: "environment",
+    stream: null,
+    deviceId: null,
+  },
+};
+
+const state = {
+  running: false,
+  starting: false,
+  mode: "off",          // off | dual | alternate
+  devices: [],
+  layout: "auto",       // auto | rows | cols
+  swapped: false,
+  mirrorFront: true,
+  altTimer: null,
+  altSide: "front",     // 번갈아 모드에서 현재 살아있는 쪽
+  altBusy: false,
+  wakeLock: null,
+};
+
+const ALT_INTERVAL = 2200;   // 번갈아 모드 전환 주기(ms)
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* ---------------------------------------------------------------- 카메라 열기 */
+
+/**
+ * 여러 제약 조건을 순서대로 시도한다. deviceId가 가장 정확하고,
+ * facingMode exact → facingMode ideal 순으로 물러난다.
+ * (데스크톱 브라우저는 facingMode를 아예 모르는 경우가 있다.)
+ */
+async function openCamera({ deviceId, facing, strict }) {
+  const base = {
+    width:     { ideal: 1280 },
+    height:    { ideal: 720 },
+    frameRate: { ideal: 30 },
+  };
+
+  const attempts = [];
+  if (deviceId) attempts.push({ ...base, deviceId: { exact: deviceId } });
+  if (facing) {
+    attempts.push({ ...base, facingMode: { exact: facing } });
+    attempts.push({ ...base, facingMode: facing });
+  }
+  // strict가 아닐 때만 "아무 카메라나"로 물러난다.
+  // 사용자가 특정 카메라를 지정한 경우엔 폴백이 엉뚱한 렌즈를 잡을 수 있어 막는다.
+  if (!strict) attempts.push(base);
+
+  let lastErr = new Error("시도할 조건이 없습니다.");
+  for (const video of attempts) {
+    try {
+      return await navigator.mediaDevices.getUserMedia({ video, audio: false });
+    } catch (err) {
+      lastErr = err;
+      // 권한 거부는 다른 조건으로 재시도해도 소용없으니 즉시 중단
+      if (err && err.name === "NotAllowedError") throw err;
+    }
+  }
+  throw lastErr;
+}
+
+function stopStream(stream) {
+  if (stream) for (const t of stream.getTracks()) t.stop();
+}
+
+async function attach(side, stream) {
+  const p = panes[side];
+  p.stream = stream;
+  p.video.srcObject = stream;
+
+  const track = stream.getVideoTracks()[0];
+  p.deviceId = track ? (track.getSettings().deviceId || null) : null;
+
+  try { await p.video.play(); } catch (_) { /* 자동재생 차단은 muted라 사실상 없음 */ }
+
+  p.panel.dataset.live = "true";
+  p.panel.dataset.frozen = "false";
+  updateRes(side);
+}
+
+function detach(side) {
+  const p = panes[side];
+  stopStream(p.stream);
+  p.stream = null;
+  p.video.srcObject = null;
+  p.panel.dataset.live = "false";
+  p.res.textContent = "";
+}
+
+function updateRes(side) {
+  const p = panes[side];
+  const t = p.stream && p.stream.getVideoTracks()[0];
+  if (!t) { p.res.textContent = ""; return; }
+  const s = t.getSettings();
+  p.res.textContent = s.width && s.height ? `${s.width}×${s.height}` : "";
+}
+
+/* ------------------------------------------------- 실제로 살아있는지 검사 */
+
+/**
+ * video.currentTime이 흐르는지 보고 "진짜 재생 중"인지 판정한다.
+ * track.readyState만으로는 iOS가 스트림을 죽인 경우를 못 잡는다.
+ */
+async function isReallyPlaying(side, ms = 700) {
+  const p = panes[side];
+  const track = p.stream && p.stream.getVideoTracks()[0];
+  if (!track || track.readyState !== "live") return false;
+
+  const t0 = p.video.currentTime;
+  await sleep(ms);
+
+  // currentTime이 흘렀다는 것 자체가 프레임이 들어오고 있다는 증거다.
+  // track.muted는 정상 기기에서도 일시적으로 true가 될 수 있어 판정에 쓰지 않는다.
+  const advanced = p.video.currentTime > t0 + 0.01;
+  return track.readyState === "live" && advanced;
+}
+
+/* ---------------------------------------------------------- 기기 목록 */
+
+async function refreshDevices() {
+  try {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    state.devices = all.filter((d) => d.kind === "videoinput");
+  } catch (_) {
+    state.devices = [];
+  }
+  buildPickers();
+  renderDiag();
+}
+
+function labelOf(d, i) {
+  const raw = (d.label || "").trim();
+  if (!raw) return `카메라 ${i + 1}`;
+  // "camera2 0, facing back" 같은 안드로이드 기본 라벨을 조금 다듬는다
+  return raw
+    .replace(/,?\s*facing\s+back/i,  " (후면)")
+    .replace(/,?\s*facing\s+front/i, " (전면)");
+}
+
+function buildPickers() {
+  for (const side of SIDES) {
+    const p = panes[side];
+    p.sel.innerHTML = "";
+    state.devices.forEach((d, i) => {
+      const o = document.createElement("option");
+      o.value = d.deviceId;
+      o.textContent = labelOf(d, i);
+      if (d.deviceId && d.deviceId === p.deviceId) o.selected = true;
+      p.sel.appendChild(o);
+    });
+    if (!state.devices.length) {
+      const o = document.createElement("option");
+      o.textContent = "감지된 카메라 없음";
+      p.sel.appendChild(o);
+    }
+  }
+}
+
+/* -------------------------------------------------------------- 시작 */
+
+async function start() {
+  if (state.starting || state.running) return;
+
+  // 사전 점검: 안 되는 환경이면 미리 알려준다
+  if (!window.isSecureContext) {
+    return showNote(
+      "이 페이지가 HTTPS가 아닙니다.\n\n" +
+      "브라우저는 보안 연결(HTTPS) 또는 localhost에서만 카메라를 허용합니다. " +
+      "https:// 주소로 다시 접속해 주세요.", "bad");
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return showNote(
+      "이 브라우저는 카메라 API(getUserMedia)를 지원하지 않습니다.\n\n" +
+      "안드로이드는 Chrome, 아이폰·아이패드는 Safari로 열어 주세요.", "bad");
+  }
+
+  state.starting = true;
+  el.start.disabled = true;
+  el.start.textContent = "카메라 켜는 중…";
+  hideNote();
+
+  try {
+    // 1단계 — 전면 카메라. 이때 권한 팝업이 뜬다.
+    let frontStream;
+    try {
+      frontStream = await openCamera({ facing: panes.front.facing });
+    } catch (err) {
+      throw tagError(err, "front");
+    }
+    await attach("front", frontStream);
+
+    // 2단계 — 권한을 받았으므로 이제 label이 채워진 기기 목록을 읽을 수 있다
+    await refreshDevices();
+
+    // 3단계 — 후면 카메라. 여기서 동시 사용 가능 여부가 갈린다.
+    let backErr = null;
+    try {
+      let backStream = await openCamera({ facing: panes.back.facing });
+
+      // 같은 카메라가 두 번 잡히면(단일 카메라 기기 등) 다른 기기로 재시도
+      const sameDevice =
+        backStream.getVideoTracks()[0] &&
+        backStream.getVideoTracks()[0].getSettings().deviceId === panes.front.deviceId;
+
+      if (sameDevice) {
+        const other = state.devices.find((d) => d.deviceId && d.deviceId !== panes.front.deviceId);
+        stopStream(backStream);
+        if (!other) throw Object.assign(new Error("두 번째 카메라가 없습니다."), { name: "OnlyOneCamera" });
+        backStream = await openCamera({ deviceId: other.deviceId });
+      }
+
+      await attach("back", backStream);
+    } catch (err) {
+      backErr = err;
+    }
+
+    // 4단계 — 두 화면이 정말 프레임을 갱신하는지 동시에 확인
+    const [frontOk, backOk] = await Promise.all([
+      isReallyPlaying("front"),
+      backErr ? Promise.resolve(false) : isReallyPlaying("back"),
+    ]);
+
+    if (frontOk && backOk) {
+      enterDual();
+    } else if (backErr && backErr.name === "OnlyOneCamera") {
+      // 카메라가 하나뿐 — 전면만 계속 보여준다
+      state.running = true;
+      setMode("dual", "카메라 1개");
+      finishUI();
+      toast("이 기기에는 카메라가 하나만 있습니다. 감지된 카메라로 단일 화면을 표시합니다.", "warn");
+    } else {
+      await enterAlternate(backErr, { frontOk, backOk });
+    }
+
+    await refreshDevices();
+    await requestWakeLock();
+
+  } catch (err) {
+    detach("front");
+    detach("back");
+    setMode("off");
+    showNote(explain(err), "bad");
+  } finally {
+    state.starting = false;
+    el.start.disabled = false;
+    el.start.textContent = "카메라 켜기";
+  }
+}
+
+function finishUI() {
+  el.cover.hidden = true;
+  el.stop.hidden = false;
+}
+
+function enterDual() {
+  stopAltLoop();
+  state.running = true;
+  state.mode = "dual";
+  for (const s of SIDES) panes[s].panel.dataset.frozen = "false";
+  setMode("dual");
+  finishUI();
+}
+
+/* ------------------------------------------------- 번갈아 모드 (폴백) */
+
+async function enterAlternate(backErr, flags) {
+  state.running = true;
+  state.mode = "alternate";
+  setMode("alt");
+  finishUI();
+
+  // 후면 스트림이 살아남았어도 동시 재생이 안 되는 상황이므로 정리하고
+  // 한 번에 하나씩 돌린다.
+  detach("back");
+  if (!flags.frontOk) detach("front");
+
+  toast(reasonForAlternate(backErr, flags), "warn", 11000);
+
+  state.altSide = "front";
+  if (!panes.front.stream) {
+    try { await attach("front", await openCamera({ facing: panes.front.facing })); }
+    catch (_) { /* 다음 루프에서 재시도 */ }
+  }
+  startAltLoop();
+}
+
+function reasonForAlternate(backErr, flags) {
+  const head = "이 기기는 두 카메라를 동시에 켤 수 없습니다.\n→ 자동으로 번갈아 전환 모드로 실행합니다.\n\n원인: ";
+  if (backErr) {
+    switch (backErr.name) {
+      case "NotReadableError":
+      case "TrackStartError":
+        return head + "후면 카메라를 여는 데 실패했습니다. 다른 앱이 카메라를 쓰고 있거나, 기기가 동시 사용을 지원하지 않습니다.";
+      case "NotFoundError":
+      case "OverconstrainedError":
+        return head + "후면 카메라를 찾지 못했습니다.";
+      default:
+        return head + `후면 카메라 오류 (${backErr.name || "알 수 없음"}).`;
+    }
+  }
+  if (flags && !flags.frontOk) {
+    return head + "후면 카메라를 켜자 전면 화면이 멈췄습니다. iOS Safari는 한 번에 카메라 1개만 허용합니다.";
+  }
+  return head + "두 번째 화면이 프레임을 갱신하지 못했습니다.";
+}
+
+function startAltLoop() {
+  stopAltLoop();
+  state.altTimer = setInterval(swapAlt, ALT_INTERVAL);
+}
+
+function stopAltLoop() {
+  if (state.altTimer) { clearInterval(state.altTimer); state.altTimer = null; }
+}
+
+/** 현재 화면을 캔버스에 떠 놓아, 카메라가 꺼져도 마지막 프레임이 남게 한다 */
+function freezeFrame(side) {
+  const p = panes[side];
+  // 프레임을 못 떠도 '대기 중' 상태는 표시해야 한다. 그래야 고장난 것으로 보이지 않는다.
+  p.panel.dataset.frozen = "true";
+
+  const w = p.video.videoWidth, h = p.video.videoHeight;
+  if (!w || !h) return false;
+  p.freeze.width = w;
+  p.freeze.height = h;
+  try {
+    p.freeze.getContext("2d").drawImage(p.video, 0, 0, w, h);
+    return true;
+  } catch (_) { return false; }
+}
+
+async function swapAlt() {
+  if (!state.running || state.mode !== "alternate" || state.altBusy) return;
+  if (document.hidden) return;
+
+  state.altBusy = true;
+  const from = state.altSide;
+  const to = from === "front" ? "back" : "front";
+
+  try {
+    freezeFrame(from);
+    detach(from);
+    await sleep(60);   // 하드웨어가 카메라를 놓아줄 시간
+
+    const p = panes[to];
+    const stream = await openCamera({ deviceId: p.deviceId, facing: p.facing });
+    await attach(to, stream);
+    state.altSide = to;
+  } catch (_) {
+    // 실패하면 원래 쪽으로 되돌린다
+    try {
+      const back = panes[from];
+      await attach(from, await openCamera({ deviceId: back.deviceId, facing: back.facing }));
+      state.altSide = from;
+    } catch (_) { /* 다음 주기에 재시도 */ }
+  } finally {
+    state.altBusy = false;
+  }
+}
+
+/* -------------------------------------------------------------- 정지 */
+
+function stopAll() {
+  stopAltLoop();
+  state.running = false;
+  state.mode = "off";
+  for (const s of SIDES) {
+    detach(s);
+    panes[s].panel.dataset.frozen = "false";
+  }
+  releaseWakeLock();
+  setMode("off");
+  el.stop.hidden = true;
+  el.cover.hidden = false;
+  hideNote();
+  hideToast();
+}
+
+/* ------------------------------------------------------ 화면 꺼짐 방지 */
+
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator)) return;
+  try {
+    state.wakeLock = await navigator.wakeLock.request("screen");
+    state.wakeLock.addEventListener("release", () => { state.wakeLock = null; });
+  } catch (_) { /* 배터리 절약 모드 등에서 거부될 수 있음 */ }
+}
+
+function releaseWakeLock() {
+  if (state.wakeLock) { try { state.wakeLock.release(); } catch (_) {} state.wakeLock = null; }
+}
+
+/* ------------------------------------------------------------ 오류 안내 */
+
+function tagError(err, side) {
+  if (err && typeof err === "object") err._side = side;
+  return err;
+}
+
+function explain(err) {
+  const name = (err && err.name) || "";
+  const where = err && err._side === "front" ? "전면" : "후면";
+
+  switch (name) {
+    case "NotAllowedError":
+      return "카메라 권한이 거부되었습니다.\n\n" +
+             "주소창 왼쪽의 자물쇠(또는 ⓘ) 아이콘 → 사이트 설정 → 카메라를 '허용'으로 바꾼 뒤 " +
+             "페이지를 새로고침해 주세요.";
+    case "NotFoundError":
+    case "DevicesNotFoundError":
+      return "카메라를 찾을 수 없습니다.\n\n이 기기에 사용 가능한 카메라가 없거나, 브라우저가 접근할 수 없습니다.";
+    case "NotReadableError":
+    case "TrackStartError":
+      return `${where} 카메라를 시작할 수 없습니다.\n\n` +
+             "다른 앱이나 다른 탭에서 카메라를 사용 중일 수 있습니다. 모두 닫은 뒤 다시 시도해 주세요.";
+    case "OverconstrainedError":
+      return "요청한 카메라 설정을 이 기기가 지원하지 않습니다.\n\n하단의 '카메라 선택'에서 직접 골라 보세요.";
+    case "SecurityError":
+      return "보안 정책 때문에 카메라를 사용할 수 없습니다.\n\nHTTPS로 접속했는지 확인해 주세요.";
+    case "OnlyOneCamera":
+      return "이 기기에서 카메라를 하나만 찾았습니다.";
+    default:
+      return "카메라를 켜지 못했습니다.\n\n" + (name ? name + ": " : "") + ((err && err.message) || "알 수 없는 오류");
+  }
+}
+
+/** 시작 화면(cover) 안에 표시하는 안내 — 실행 실패했을 때 쓴다 */
+function showNote(text, kind) {
+  el.note.textContent = text;
+  el.note.className = kind || "";
+  el.note.hidden = false;
+}
+
+function hideNote() { el.note.hidden = true; el.note.textContent = ""; }
+
+/** 실행 중 안내 — 카메라 화면을 가리지 않고 위에 잠깐 떠 있는다 */
+let toastTimer = null;
+function toast(text, kind, ms = 7000) {
+  el.toastText.textContent = text;
+  el.toast.className = "show " + (kind || "");
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, ms);
+}
+
+function hideToast() {
+  el.toast.className = "";
+  if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+}
+
+function setMode(mode, labelOverride) {
+  state.mode = mode;
+  el.mode.className = mode === "dual" ? "dual" : mode === "alternate" ? "alt" : "off";
+  el.mode.textContent = labelOverride
+    || (mode === "dual" ? "동시 실행" : mode === "alternate" ? "번갈아 전환" : "대기");
+}
+
+/* ------------------------------------------------------------ 진단 패널 */
+
+function renderDiag() {
+  const rows = [
+    ["보안 연결", window.isSecureContext ? "HTTPS (정상)" : "아님 — 카메라 사용 불가"],
+    ["getUserMedia", navigator.mediaDevices && navigator.mediaDevices.getUserMedia ? "지원" : "미지원"],
+    ["Wake Lock", "wakeLock" in navigator ? "지원" : "미지원"],
+    ["실행 모드", el.mode.textContent],
+    ["카메라 개수", String(state.devices.length)],
+    ["화면", `${window.innerWidth}×${window.innerHeight}`],
+    ["User Agent", navigator.userAgent],
+  ];
+  el.diagEnv.innerHTML = rows
+    .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`)
+    .join("");
+
+  if (!state.devices.length) {
+    el.diagList.innerHTML = "<li>아직 확인되지 않음. 먼저 시작하세요.</li>";
+    return;
+  }
+  el.diagList.innerHTML = state.devices.map((d, i) => {
+    let tag = "";
+    if (d.deviceId && d.deviceId === panes.front.deviceId) tag = '<span class="tag f">전면 사용중</span>';
+    else if (d.deviceId && d.deviceId === panes.back.deviceId) tag = '<span class="tag b">후면 사용중</span>';
+    const id = d.deviceId ? d.deviceId.slice(0, 12) + "…" : "(없음)";
+    return `<li>${esc(labelOf(d, i))}${tag}<br><code>${esc(id)}</code></li>`;
+  }).join("");
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+/* ------------------------------------------------------------ 컨트롤 */
+
+el.start.addEventListener("click", start);
+el.stop.addEventListener("click", stopAll);
+el.toastClose.addEventListener("click", hideToast);
+
+el.mirror.addEventListener("click", () => {
+  state.mirrorFront = !state.mirrorFront;
+  panes.front.panel.dataset.mirror = String(state.mirrorFront);
+  el.mirror.setAttribute("aria-pressed", String(state.mirrorFront));
+});
+
+el.layout.addEventListener("click", () => {
+  const order = ["auto", "rows", "cols"];
+  const names = { auto: "자동", rows: "위/아래", cols: "좌/우" };
+  state.layout = order[(order.indexOf(state.layout) + 1) % order.length];
+  el.stage.dataset.layout = state.layout;
+  el.layout.textContent = "분할: " + names[state.layout];
+});
+
+el.swap.addEventListener("click", () => {
+  state.swapped = !state.swapped;
+  el.stage.dataset.swapped = String(state.swapped);
+});
+
+el.pickers.addEventListener("click", () => {
+  const on = el.app.dataset.pickers === "on";
+  el.app.dataset.pickers = on ? "off" : "on";
+  el.pickers.setAttribute("aria-pressed", String(!on));
+});
+
+el.diagBtn.addEventListener("click", () => {
+  const show = el.diag.hidden;
+  el.diag.hidden = !show;
+  el.diagBtn.setAttribute("aria-pressed", String(show));
+  if (show) renderDiag();
+});
+
+el.full.addEventListener("click", async () => {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await el.app.requestFullscreen({ navigationUI: "hide" });
+  } catch (_) { /* iOS Safari는 요소 전체화면을 지원하지 않는다 */ }
+});
+
+// 카메라 직접 선택
+for (const side of SIDES) {
+  panes[side].sel.addEventListener("change", async (e) => {
+    const deviceId = e.target.value;
+    if (!deviceId || !state.running) return;
+    const p = panes[side];
+    const prev = p.deviceId;
+    detach(side);
+    try {
+      await attach(side, await openCamera({ deviceId, strict: true }));
+    } catch (err) {
+      try { await attach(side, await openCamera({ deviceId: prev, facing: p.facing })); } catch (_) {}
+      toast(explain(err), "warn");
+    }
+    renderDiag();
+  });
+}
+
+// 탭을 벗어났다 돌아오면 스트림이 끊겨 있을 수 있으므로 복구한다
+document.addEventListener("visibilitychange", async () => {
+  if (document.hidden || !state.running) return;
+  await requestWakeLock();
+  if (state.mode === "dual") {
+    for (const side of SIDES) {
+      const p = panes[side];
+      const t = p.stream && p.stream.getVideoTracks()[0];
+      if (!t || t.readyState !== "live") {
+        detach(side);
+        try { await attach(side, await openCamera({ deviceId: p.deviceId, facing: p.facing })); }
+        catch (_) {}
+      } else {
+        try { await p.video.play(); } catch (_) {}
+      }
+    }
+  }
+});
+
+// 화면 회전 시 해상도 표시 갱신
+window.addEventListener("resize", () => {
+  for (const s of SIDES) updateRes(s);
+  if (!el.diag.hidden) renderDiag();
+});
+
+// 기기 목록이 바뀌면(외장 카메라 연결 등) 셀렉트 갱신
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+  navigator.mediaDevices.addEventListener("devicechange", () => {
+    if (state.running) refreshDevices();
+  });
+}
+
+renderDiag();
+</script>
+</body>
+</html>
