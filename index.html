@@ -65,6 +65,13 @@
     display: block;
   }
 
+  /* 표시 방식
+     cover   패널을 빈틈없이 채운다. 대신 영상의 가장자리를 잘라내므로 확대돼 보인다.
+     contain 잘라내지 않고 영상 전체를 담는다. 남는 공간에 검은 여백이 생기지만
+             카메라가 실제로 보는 화각이 전부 보인다. */
+  #app[data-fit="contain"] .panel video,
+  #app[data-fit="contain"] .panel canvas { object-fit: contain; }
+
   /* 전면 카메라는 거울처럼 좌우 반전 (셀피 기본값) */
   .panel[data-mirror="true"] video,
   .panel[data-mirror="true"] canvas { transform: scaleX(-1); }
@@ -228,6 +235,63 @@
   #mode.alt  { background: rgba(255,176,46,.18); color: #ffcd73; }
   #mode.off  { background: rgba(255,255,255,.09); color: var(--dim); }
 
+  /* ---------- 화면·줌 조절 패널 ---------- */
+  #tune {
+    position: absolute; z-index: 30;
+    left: 10px; right: 10px; bottom: 68px;
+    max-height: 62vh; overflow-y: auto;
+    background: rgba(12, 12, 14, .96);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--line);
+    border-radius: 13px;
+    padding: 15px 16px;
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+  #tune[hidden] { display: none; }
+  #tune h2 {
+    margin: 0 0 11px; font-size: 12px; letter-spacing: .04em;
+    color: var(--dim); text-transform: uppercase;
+  }
+  #tune .row {
+    display: flex; align-items: center; gap: 11px;
+    margin-bottom: 13px; flex-wrap: wrap;
+  }
+  #tune .k { color: var(--dim); flex: 0 0 auto; }
+
+  .seg { display: flex; gap: 0; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+  .seg button {
+    background: transparent; color: var(--txt); border: 0;
+    padding: 8px 12px; font: 500 12.5px/1 inherit; cursor: pointer;
+    white-space: nowrap;
+  }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--accent); }
+
+  .zoom {
+    border-top: 1px solid var(--line);
+    padding-top: 12px; margin-top: 12px;
+  }
+  .zoom .zh { display: flex; align-items: baseline; gap: 9px; margin-bottom: 8px; }
+  .zoom .v {
+    font: 700 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #9dc0ff;
+  }
+  .zoom .ctl { display: flex; align-items: center; gap: 11px; }
+  .zoom input[type="range"] {
+    flex: 1 1 auto; min-width: 0; accent-color: var(--accent);
+  }
+  .zoom input[type="range"]:disabled { opacity: .4; }
+  .zoom .mini {
+    flex: 0 0 auto;
+    background: rgba(255,255,255,.09); color: var(--txt);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 10px; font: 500 12px/1 inherit; cursor: pointer;
+    white-space: nowrap;
+  }
+  .zoom .mini:disabled { opacity: .4; cursor: default; }
+  .zoom .zn { margin-top: 7px; color: var(--dim); font-size: 11.5px; line-height: 1.5; }
+
   /* ---------- 진단 패널 ---------- */
   #diag {
     position: absolute; z-index: 30;
@@ -255,7 +319,7 @@
 </style>
 </head>
 <body>
-<div id="app" data-pickers="off">
+<div id="app" data-pickers="off" data-fit="contain">
 
   <div id="stage" data-layout="auto" data-swapped="false">
     <div class="panel" id="panelFront" data-mirror="true" data-live="false">
@@ -280,10 +344,51 @@
     <button id="btnLayout">분할: 자동</button>
     <button id="btnSwap">순서 바꾸기</button>
     <button id="btnPickers" aria-pressed="false">카메라 선택</button>
+    <button id="btnTune" aria-pressed="false">화면·줌</button>
     <button id="btnFull">전체화면</button>
     <span class="sep"></span>
     <span id="mode" class="off">대기</span>
     <button id="btnDiag" aria-pressed="false">진단</button>
+  </div>
+
+  <div id="tune" hidden>
+    <h2>화면 · 줌 조절</h2>
+
+    <div class="row">
+      <span class="k">표시 방식</span>
+      <div class="seg" id="segFit">
+        <button type="button" data-fit="contain" aria-pressed="true">전체 담기</button>
+        <button type="button" data-fit="cover" aria-pressed="false">꽉 채우기</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <span class="k">화각</span>
+      <div class="seg" id="segFov">
+        <button type="button" data-fov="max" aria-pressed="true">최대 (4:3)</button>
+        <button type="button" data-fov="wide" aria-pressed="false">와이드 (16:9)</button>
+      </div>
+    </div>
+
+    <div class="zoom">
+      <div class="zh"><span class="k">후면 줌</span><span class="v" id="zoomValBack">—</span></div>
+      <div class="ctl">
+        <input type="range" id="zoomRangeBack" min="1" max="1" step="0.1" value="1" disabled
+               aria-label="후면 카메라 줌">
+        <button type="button" class="mini" id="zoomMinBack" disabled>가장 넓게</button>
+      </div>
+      <div class="zn" id="zoomNoteBack">카메라를 켜면 확인됩니다.</div>
+    </div>
+
+    <div class="zoom">
+      <div class="zh"><span class="k">전면 줌</span><span class="v" id="zoomValFront">—</span></div>
+      <div class="ctl">
+        <input type="range" id="zoomRangeFront" min="1" max="1" step="0.1" value="1" disabled
+               aria-label="전면 카메라 줌">
+        <button type="button" class="mini" id="zoomMinFront" disabled>가장 넓게</button>
+      </div>
+      <div class="zn" id="zoomNoteFront">카메라를 켜면 확인됩니다.</div>
+    </div>
   </div>
 
   <div id="diag" hidden>
@@ -297,6 +402,7 @@
     <h1>앞뒤 동시 카메라</h1>
     <p>버튼을 누르면 전면·후면 카메라를 동시에 켜서 두 화면을 한 번에 보여줍니다.
        카메라 권한을 허용해 주세요.</p>
+    <p>화면이 확대돼 보이면 하단 <strong>화면·줌</strong>에서 표시 방식과 화각을 조절할 수 있습니다.</p>
     <button id="btnStart" class="big">카메라 켜기</button>
     <div id="coverNote" hidden></div>
   </div>
@@ -339,6 +445,10 @@ const el = {
   diagEnv:  document.getElementById("diagEnv"),
   diagList: document.getElementById("diagList"),
   mode:     document.getElementById("mode"),
+  tuneBtn:  document.getElementById("btnTune"),
+  tune:     document.getElementById("tune"),
+  segFit:   document.getElementById("segFit"),
+  segFov:   document.getElementById("segFov"),
   toast:      document.getElementById("toast"),
   toastText:  document.getElementById("toastText"),
   toastClose: document.getElementById("toastClose"),
@@ -354,6 +464,10 @@ const panes = {
     facing: "user",
     stream: null,
     deviceId: null,
+    zoomRange: document.getElementById("zoomRangeFront"),
+    zoomVal:   document.getElementById("zoomValFront"),
+    zoomMin:   document.getElementById("zoomMinFront"),
+    zoomNote:  document.getElementById("zoomNoteFront"),
   },
   back: {
     panel:  document.getElementById("panelBack"),
@@ -364,6 +478,10 @@ const panes = {
     facing: "environment",
     stream: null,
     deviceId: null,
+    zoomRange: document.getElementById("zoomRangeBack"),
+    zoomVal:   document.getElementById("zoomValBack"),
+    zoomMin:   document.getElementById("zoomMinBack"),
+    zoomNote:  document.getElementById("zoomNoteBack"),
   },
 };
 
@@ -373,6 +491,8 @@ const state = {
   mode: "off",          // off | dual | alternate
   devices: [],
   layout: "auto",       // auto | rows | cols
+  fit: "contain",       // contain(전체 담기) | cover(꽉 채우기)
+  fov: "max",           // max(4:3, 최대 화각) | wide(16:9)
   swapped: false,
   mirrorFront: true,
   altTimer: null,
@@ -392,12 +512,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * facingMode exact → facingMode ideal 순으로 물러난다.
  * (데스크톱 브라우저는 facingMode를 아예 모르는 경우가 있다.)
  */
+/**
+ * 화각 제약 조건.
+ *
+ * 폰·태블릿 센서는 4:3이 원본이고, 16:9는 그것의 위아래를 잘라낸 결과다.
+ * 즉 16:9를 요청하면 카메라가 실제로 볼 수 있는 화각의 일부를 버리게 된다.
+ * 넓게 보는 것이 목적이므로 기본값을 4:3(최대 화각)으로 둔다.
+ */
+function fovConstraints() {
+  return state.fov === "wide"
+    ? { width: { ideal: 1280 }, height: { ideal: 720 },  aspectRatio: { ideal: 16 / 9 } }
+    : { width: { ideal: 1600 }, height: { ideal: 1200 }, aspectRatio: { ideal: 4 / 3 } };
+}
+
 async function openCamera({ deviceId, facing, strict }) {
-  const base = {
-    width:     { ideal: 1280 },
-    height:    { ideal: 720 },
-    frameRate: { ideal: 30 },
-  };
+  const base = { ...fovConstraints(), frameRate: { ideal: 30 } };
 
   const attempts = [];
   if (deviceId) attempts.push({ ...base, deviceId: { exact: deviceId } });
@@ -439,6 +568,7 @@ async function attach(side, stream) {
   p.panel.dataset.live = "true";
   p.panel.dataset.frozen = "false";
   updateRes(side);
+  refreshZoomUI(side);
 }
 
 function detach(side) {
@@ -476,6 +606,122 @@ async function isReallyPlaying(side, ms = 700) {
   // track.muted는 정상 기기에서도 일시적으로 true가 될 수 있어 판정에 쓰지 않는다.
   const advanced = p.video.currentTime > t0 + 0.01;
   return track.readyState === "live" && advanced;
+}
+
+/* ------------------------------------------------------ 표시 방식 / 화각 */
+
+function applyFit(mode) {
+  state.fit = mode === "cover" ? "cover" : "contain";
+  el.app.dataset.fit = state.fit;
+  for (const b of el.segFit.querySelectorAll("button")) {
+    b.setAttribute("aria-pressed", String(b.dataset.fit === state.fit));
+  }
+}
+
+/**
+ * 실행 중인 트랙에 새 화각을 적용한다.
+ * 카메라를 다시 열지 않고 applyConstraints 로 바꾸는 편이 안전하다.
+ * 재개방은 기기가 카메라를 놓아주는 타이밍에 실패할 수 있기 때문이다.
+ */
+async function applyFov(mode) {
+  state.fov = mode === "wide" ? "wide" : "max";
+  for (const b of el.segFov.querySelectorAll("button")) {
+    b.setAttribute("aria-pressed", String(b.dataset.fov === state.fov));
+  }
+
+  const target = fovConstraints();
+  for (const side of SIDES) {
+    const track = panes[side].stream && panes[side].stream.getVideoTracks()[0];
+    if (!track) continue;
+    try {
+      await track.applyConstraints(target);
+    } catch (_) {
+      // 일부 기기는 실행 중 해상도 변경을 거부한다. 다음 시작 때 적용된다.
+    }
+    updateRes(side);
+    refreshZoomUI(side);
+  }
+  renderDiag();
+}
+
+/* ------------------------------------------------------------------ 줌 */
+
+function zoomCapsOf(side) {
+  const track = panes[side].stream && panes[side].stream.getVideoTracks()[0];
+  if (!track || typeof track.getCapabilities !== "function") return null;
+  let caps;
+  try { caps = track.getCapabilities(); } catch (_) { return null; }
+  if (!caps || !caps.zoom) return null;
+  const z = caps.zoom;
+  if (typeof z.min !== "number" || typeof z.max !== "number") return null;
+  if (!(z.max > z.min)) return null;   // 범위가 없으면 조절 불가
+  return z;
+}
+
+function currentZoom(side) {
+  const track = panes[side].stream && panes[side].stream.getVideoTracks()[0];
+  if (!track) return null;
+  try {
+    const s = track.getSettings();
+    return typeof s.zoom === "number" ? s.zoom : null;
+  } catch (_) { return null; }
+}
+
+/** 기기가 보고한 실제 줌 범위로 슬라이더를 맞춘다 */
+function refreshZoomUI(side) {
+  const p = panes[side];
+  if (!p.zoomRange) return;
+
+  const caps = zoomCapsOf(side);
+  const label = side === "back" ? "후면" : "전면";
+
+  if (!caps) {
+    p.zoomRange.disabled = true;
+    p.zoomMin.disabled = true;
+    p.zoomVal.textContent = "—";
+    p.zoomNote.textContent = p.stream
+      ? `이 ${label} 카메라는 브라우저에서 줌 조절을 지원하지 않습니다.`
+      : "카메라를 켜면 확인됩니다.";
+    return;
+  }
+
+  const step = typeof caps.step === "number" && caps.step > 0 ? caps.step : 0.1;
+  p.zoomRange.min = String(caps.min);
+  p.zoomRange.max = String(caps.max);
+  p.zoomRange.step = String(step);
+
+  const now = currentZoom(side);
+  if (now !== null) p.zoomRange.value = String(now);
+  p.zoomRange.disabled = false;
+  p.zoomMin.disabled = false;
+  p.zoomVal.textContent = (now !== null ? now : caps.min).toFixed(2) + "×";
+
+  // 1배 미만으로 내려갈 수 있는 기기인지 명확히 알려준다
+  p.zoomNote.textContent = caps.min < 1
+    ? `조절 범위 ${caps.min}× ~ ${caps.max}×. 1× 아래로 내려갈 수 있습니다.`
+    : `조절 범위 ${caps.min}× ~ ${caps.max}×. 이 카메라의 최소 배율은 ${caps.min}×이며, ` +
+      "그보다 넓히려면 초광각 렌즈가 따로 있어야 합니다.";
+}
+
+async function applyZoom(side, value) {
+  const track = panes[side].stream && panes[side].stream.getVideoTracks()[0];
+  if (!track) return;
+  const v = Number(value);
+  if (!Number.isFinite(v)) return;
+
+  try {
+    await track.applyConstraints({ advanced: [{ zoom: v }] });
+  } catch (_) {
+    try { await track.applyConstraints({ zoom: v }); } catch (_) { return; }
+  }
+
+  const now = currentZoom(side);
+  panes[side].zoomVal.textContent = (now !== null ? now : v).toFixed(2) + "×";
+  renderDiag();
+}
+
+function refreshAllZoomUI() {
+  for (const side of SIDES) refreshZoomUI(side);
 }
 
 /* ---------------------------------------------------------- 기기 목록 */
@@ -596,6 +842,7 @@ async function start() {
     }
 
     await refreshDevices();
+    refreshAllZoomUI();
     await requestWakeLock();
 
   } catch (err) {
@@ -733,6 +980,7 @@ function stopAll() {
   }
   releaseWakeLock();
   setMode("off");
+  refreshAllZoomUI();
   el.stop.hidden = true;
   el.cover.hidden = false;
   hideNote();
@@ -826,6 +1074,12 @@ function renderDiag() {
     ["Wake Lock", "wakeLock" in navigator ? "지원" : "미지원"],
     ["실행 모드", el.mode.textContent],
     ["카메라 개수", String(state.devices.length)],
+    ["요청 화각", state.fov === "wide" ? "와이드 16:9" : "최대 4:3"],
+    ["표시 방식", state.fit === "cover" ? "꽉 채우기 (가장자리 잘림)" : "전체 담기 (잘림 없음)"],
+    ["후면 해상도", describeFrame("back")],
+    ["전면 해상도", describeFrame("front")],
+    ["후면 줌", describeZoom("back")],
+    ["전면 줌", describeZoom("front")],
     ["화면", `${window.innerWidth}×${window.innerHeight}`],
     ["User Agent", navigator.userAgent],
   ];
@@ -844,6 +1098,29 @@ function renderDiag() {
     const id = d.deviceId ? d.deviceId.slice(0, 12) + "…" : "(없음)";
     return `<li>${esc(labelOf(d, i))}${tag}<br><code>${esc(id)}</code></li>`;
   }).join("");
+}
+
+/** 실제로 받고 있는 해상도와 그 비율을 보여준다 (요청값이 아니라 결과값) */
+function describeFrame(side) {
+  const t = panes[side].stream && panes[side].stream.getVideoTracks()[0];
+  if (!t) return "-";
+  const s = t.getSettings();
+  if (!s.width || !s.height) return "-";
+  const r = s.width / s.height;
+  const name = Math.abs(r - 4 / 3) < 0.04 ? "4:3"
+             : Math.abs(r - 16 / 9) < 0.04 ? "16:9"
+             : r.toFixed(2) + ":1";
+  return `${s.width}×${s.height} (${name})`;
+}
+
+/** 줌 지원 여부와 실제 범위를 그대로 보여준다 */
+function describeZoom(side) {
+  if (!panes[side].stream) return "-";
+  const caps = zoomCapsOf(side);
+  if (!caps) return "조절 미지원";
+  const now = currentZoom(side);
+  return `${now !== null ? now.toFixed(2) : "?"}× ` +
+         `(범위 ${caps.min}× ~ ${caps.max}×)`;
 }
 
 function esc(s) {
@@ -886,8 +1163,41 @@ el.diagBtn.addEventListener("click", () => {
   const show = el.diag.hidden;
   el.diag.hidden = !show;
   el.diagBtn.setAttribute("aria-pressed", String(show));
-  if (show) renderDiag();
+  if (show) { el.tune.hidden = true; el.tuneBtn.setAttribute("aria-pressed", "false"); renderDiag(); }
 });
+
+el.tuneBtn.addEventListener("click", () => {
+  const show = el.tune.hidden;
+  el.tune.hidden = !show;
+  el.tuneBtn.setAttribute("aria-pressed", String(show));
+  if (show) {
+    el.diag.hidden = true;
+    el.diagBtn.setAttribute("aria-pressed", "false");
+    refreshAllZoomUI();
+  }
+});
+
+el.segFit.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-fit]");
+  if (b) applyFit(b.dataset.fit);
+});
+
+el.segFov.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-fov]");
+  if (b) applyFov(b.dataset.fov);
+});
+
+for (const side of SIDES) {
+  const p = panes[side];
+  if (!p.zoomRange) continue;
+  p.zoomRange.addEventListener("input", (e) => applyZoom(side, e.target.value));
+  p.zoomMin.addEventListener("click", () => {
+    const caps = zoomCapsOf(side);
+    if (!caps) return;
+    p.zoomRange.value = String(caps.min);
+    applyZoom(side, caps.min);
+  });
+}
 
 el.full.addEventListener("click", async () => {
   try {
@@ -910,6 +1220,7 @@ for (const side of SIDES) {
       try { await attach(side, await openCamera({ deviceId: prev, facing: p.facing })); } catch (_) {}
       toast(explain(err), "warn");
     }
+    refreshZoomUI(side);
     renderDiag();
   });
 }
@@ -946,6 +1257,12 @@ if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
   });
 }
 
+// 초기 UI 상태를 state 값과 맞춘다
+applyFit(state.fit);
+for (const b of el.segFov.querySelectorAll("button")) {
+  b.setAttribute("aria-pressed", String(b.dataset.fov === state.fov));
+}
+refreshAllZoomUI();
 renderDiag();
 </script>
 </body>
