@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="앞뒤카메라">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>앞뒤 동시 카메라</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
@@ -163,6 +170,30 @@
     white-space: pre-line;
   }
   #coverNote[hidden] { display: none; }
+
+  /* 홈 화면 앱 관련 */
+  .opt {
+    display: flex; align-items: flex-start; gap: 9px;
+    max-width: 30em; text-align: left;
+    font-size: 13.5px; line-height: 1.5; cursor: pointer;
+  }
+  .opt input { flex: 0 0 auto; width: 19px; height: 19px; margin: 1px 0 0; accent-color: var(--accent); }
+  .opt em { display: block; font-style: normal; font-size: 12px; color: var(--dim); margin-top: 2px; }
+
+  .ghost {
+    background: rgba(255, 255, 255, .08);
+    color: var(--txt);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 12px 24px;
+    font: 500 14px/1 inherit;
+    cursor: pointer;
+  }
+  .ghost:active { background: rgba(255, 255, 255, .18); }
+  .ghost[hidden] { display: none; }
+
+  .tiny { font-size: 12px !important; color: var(--dim) !important; }
+  .tiny[hidden] { display: none; }
   #coverNote.bad  { border-color: rgba(255,69,58,.5);  background: rgba(255,69,58,.1); }
   #coverNote.warn { border-color: rgba(255,176,46,.5); background: rgba(255,176,46,.1); }
 
@@ -404,6 +435,15 @@
        카메라 권한을 허용해 주세요.</p>
     <p>화면이 확대돼 보이면 하단 <strong>화면·줌</strong>에서 표시 방식과 화각을 조절할 수 있습니다.</p>
     <button id="btnStart" class="big">카메라 켜기</button>
+
+    <label id="autoStartWrap" class="opt">
+      <input type="checkbox" id="chkAutoStart">
+      <span>열면 바로 시작 <em>권한이 이미 허용된 경우</em></span>
+    </label>
+
+    <button id="btnInstall" class="ghost" hidden>홈 화면에 추가</button>
+    <p id="installedNote" class="tiny" hidden>홈 화면 앱으로 실행 중입니다.</p>
+
     <div id="coverNote" hidden></div>
   </div>
 
@@ -452,6 +492,10 @@ const el = {
   toast:      document.getElementById("toast"),
   toastText:  document.getElementById("toastText"),
   toastClose: document.getElementById("toastClose"),
+  autoStart:     document.getElementById("chkAutoStart"),
+  autoStartWrap: document.getElementById("autoStartWrap"),
+  install:       document.getElementById("btnInstall"),
+  installedNote: document.getElementById("installedNote"),
 };
 
 const panes = {
@@ -1256,6 +1300,111 @@ if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
     if (state.running) refreshDevices();
   });
 }
+
+/* ========================================================================
+   홈 화면 앱 (PWA)
+   ------------------------------------------------------------------------
+   백그라운드 실행은 불가능하다. 브라우저는 화면에 보이지 않는 문서에서
+   카메라 시작을 금지하고, 서비스 워커에는 getUserMedia 자체가 없다.
+   사생활 보호를 위한 의도적 제약이므로 우회 대상이 아니다.
+
+   그래서 여기서 하는 일은 "여는 속도"까지다.
+     - 홈 화면 아이콘 → 브라우저 UI 없이 전체화면으로 바로 실행
+     - 권한이 이미 허용돼 있으면 탭하는 순간 카메라 자동 시작
+     - 네트워크가 없어도 열림
+   ======================================================================== */
+
+const AUTO_KEY = "dc.autostart";
+
+function readAutoStart() {
+  try { return localStorage.getItem(AUTO_KEY) === "1"; } catch (_) { return false; }
+}
+function writeAutoStart(on) {
+  try { localStorage.setItem(AUTO_KEY, on ? "1" : "0"); } catch (_) {}
+}
+
+/** 홈 화면 앱으로 실행 중인지 */
+function isStandalone() {
+  return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+         (window.matchMedia && window.matchMedia("(display-mode: fullscreen)").matches) ||
+         window.navigator.standalone === true;
+}
+
+/** 카메라 권한이 이미 허용됐는지. 알 수 없으면 null */
+async function cameraPermissionGranted() {
+  if (!navigator.permissions || !navigator.permissions.query) return null;
+  try {
+    const st = await navigator.permissions.query({ name: "camera" });
+    return st.state === "granted";
+  } catch (_) {
+    return null;   // 일부 브라우저는 camera 를 조회하지 못한다
+  }
+}
+
+el.autoStart.checked = readAutoStart();
+el.autoStart.addEventListener("change", () => {
+  writeAutoStart(el.autoStart.checked);
+  if (el.autoStart.checked) {
+    toast("다음에 열 때 카메라가 자동으로 켜집니다.\n권한이 허용된 상태여야 합니다.", null, 4000);
+  }
+});
+
+// 설치 버튼 — 브라우저 메뉴를 찾지 않아도 되게 한다
+let installPrompt = null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  if (!isStandalone()) el.install.hidden = false;
+});
+
+el.install.addEventListener("click", async () => {
+  if (!installPrompt) return;
+  el.install.hidden = true;
+  try {
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+  } catch (_) {}
+  installPrompt = null;
+});
+
+window.addEventListener("appinstalled", () => {
+  el.install.hidden = true;
+  toast("홈 화면에 추가되었습니다.\n이제 아이콘을 눌러 바로 실행할 수 있습니다.", null, 5000);
+});
+
+if (isStandalone()) {
+  el.installedNote.hidden = false;
+  el.install.hidden = true;
+}
+
+// 서비스 워커 — 설치 가능하게 만들고 오프라인에서도 열리게 한다
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {
+      // 등록 실패는 치명적이지 않다. 앱은 그대로 동작한다.
+    });
+  });
+}
+
+/**
+ * 자동 시작.
+ * 권한이 이미 허용된 경우에만 시도한다. 허용되지 않았다면 권한 팝업이
+ * 사용자 동작 없이 뜨는 셈이 되어 브라우저가 막거나 사용자를 놀라게 한다.
+ */
+(async function maybeAutoStart() {
+  if (!readAutoStart()) return;
+  if (!window.isSecureContext) return;
+
+  const granted = await cameraPermissionGranted();
+  if (granted !== true) {
+    // 확인할 수 없거나 허용되지 않음 → 버튼을 누르게 둔다
+    if (granted === false) {
+      toast("자동 시작이 켜져 있지만 카메라 권한이 없습니다.\n아래 버튼을 눌러 허용해 주세요.", "warn");
+    }
+    return;
+  }
+  start();
+})();
 
 // 초기 UI 상태를 state 값과 맞춘다
 applyFit(state.fit);
